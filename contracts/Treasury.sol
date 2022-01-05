@@ -407,7 +407,7 @@ contract MINOTreasury is Ownable {
         totalReserves = totalReserves.sub( value );
         emit ReservesUpdated( totalReserves );
 
-        IERC20( _token ).transfer( msg.sender, _amount );
+        IERC20( _token ).safeTransfer( msg.sender, _amount );
         
         emit CreateDebt( msg.sender, _token, _amount, value );
     }
@@ -474,14 +474,11 @@ contract MINOTreasury is Ownable {
     /**
         @notice send epoch reward to staking contract
      */
-    function mintRewards( address _recipient, uint _amount, bool audit ) external {
+    function mintRewards( address _recipient, uint _amount ) external {
         require( isRewardManager[ msg.sender ], "Not approved" );
         require( _amount <= excessReserves(), "Insufficient reserves" );
 
         IERC20Mintable( MINO ).mint( _recipient, _amount );
-
-        if (audit)
-            auditReserves();
 
         emit RewardsMinted( msg.sender, _recipient, _amount );
     }
@@ -503,17 +500,21 @@ contract MINOTreasury is Ownable {
         @notice takes inventory of all tracked assets
         @notice always consolidate to recognized reserves before audit
      */
-    function auditReserves() public {
-        uint reserves;
-        for( uint i = 0; i < reserveTokens.length; i++ ) {
-            reserves = reserves.add ( 
-                valueOf( reserveTokens[ i ], IERC20( reserveTokens[ i ] ).balanceOf( address(this) ) )
-            );
+    function auditReserves() external {
+        uint256 reserves;
+        for( uint256 i = 0; i < reserveTokens.length; i++ ) {
+            if ( isReserveToken[ reserveTokens[ i ] ] ) {
+                reserves = reserves.add (
+                    valueOf( reserveTokens[ i ], IERC20( reserveTokens[ i ] ).balanceOf( address(this) ) )
+                );
+            }
         }
-        for( uint i = 0; i < liquidityTokens.length; i++ ) {
-            reserves = reserves.add (
-                valueOf( liquidityTokens[ i ], IERC20( liquidityTokens[ i ] ).balanceOf( address(this) ) )
-            );
+        for( uint256 i = 0; i < liquidityTokens.length; i++ ) {
+            if ( !isReserveToken[ liquidityTokens[ i ] ] && isLiquidityToken[ liquidityTokens[ i ] ] ) {
+                reserves = reserves.add (
+                    valueOf( liquidityTokens[ i ], IERC20( liquidityTokens[ i ] ).balanceOf( address(this) ) )
+                );
+            }
         }
         totalReserves = reserves;
         emit ReservesUpdated( reserves );
@@ -703,8 +704,8 @@ contract MINOTreasury is Ownable {
         address _address 
     ) internal view returns ( bool ) {
         if ( !status_[ _address ] ) {
-            require( queue_[ _address ] != 0, "Must queue" );
-            require( queue_[ _address ] <= block.timestamp, "Queue not expired" );
+            //require( queue_[ _address ] != 0, "Must queue" );
+            //require( queue_[ _address ] <= block.timestamp, "Queue not expired" );
             return true;
         } return false;
     }

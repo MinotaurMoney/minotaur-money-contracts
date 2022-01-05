@@ -359,7 +359,7 @@ contract Policy is IPolicy {
 }
 
 interface ITreasury {
-    function mintRewards( address _recipient, uint _amount, bool audit ) external;
+    function mintRewards( address _recipient, uint _amount ) external;
 }
 
 contract Distributor is Policy {
@@ -379,6 +379,8 @@ contract Distributor is Policy {
     
     mapping( uint => Adjust ) public adjustments;
     
+    // 5% of supply
+    uint256 public constant MAX_RATE = 5e4;
     
     /* ====== STRUCTS ====== */
         
@@ -423,8 +425,7 @@ contract Distributor is Policy {
                 if ( info[ i ].rate > 0 ) {
                     ITreasury( treasury ).mintRewards( // mint and send from treasury
                         info[ i ].recipient, 
-                        nextRewardAt( info[ i ].rate ),
-                        false
+                        nextRewardAt( info[ i ].rate )
                     );
                     adjust( i ); // check for adjustment
                 }
@@ -448,12 +449,14 @@ contract Distributor is Policy {
             if ( adjustment.add ) { // if rate should increase
                 info[ _index ].rate = info[ _index ].rate.add( adjustment.rate ); // raise rate
                 if ( info[ _index ].rate >= adjustment.target ) { // if target met
-                    adjustments[ _index ].rate = 0; // turn off adjustment
+                    info[ _index ].rate = adjustment.target;
+                    delete adjustments[ _index ];
                 }
             } else { // if rate should decrease
-                info[ _index ].rate = info[ _index ].rate.sub( adjustment.rate ); // lower rate
+                info[ _index ].rate = info[ _index ].rate > adjustment.rate ? info[ _index ].rate.sub( adjustment.rate ) : 0; // lower rate
                 if ( info[ _index ].rate <= adjustment.target ) { // if target met
-                    adjustments[ _index ].rate = 0; // turn off adjustment
+                    info[ _index ].rate = adjustment.target;
+                    delete adjustments[ _index ];
                 }
             }
         }
@@ -489,8 +492,6 @@ contract Distributor is Policy {
     
     
     
-    /* ====== POLICY FUNCTIONS ====== */
-
     /**
         @notice adds recipient for distributions
         @param _recipient address
@@ -498,6 +499,8 @@ contract Distributor is Policy {
      */
     function addRecipient( address _recipient, uint _rewardRate ) external onlyPolicy() {
         require( _recipient != address(0) );
+        require( _rewardRate <= MAX_RATE, "_rewardRate too high" );
+
         info.push( Info({
             recipient: _recipient,
             rate: _rewardRate
@@ -510,9 +513,18 @@ contract Distributor is Policy {
         @param _recipient address
      */
     function removeRecipient( uint _index, address _recipient ) external onlyPolicy() {
-        require( _recipient == info[ _index ].recipient );
-        info[ _index ].recipient = address(0);
-        info[ _index ].rate = 0;
+        require( _recipient == info[ _index ].recipient, "Invalid recipient" );
+        require( _index < info.length, "Index out of range" );
+
+        if ( _index < info.length - 1 ) {
+            info[ _index ] = info[ info.length - 1 ];
+
+            adjustments[ _index ] = adjustments[ info.length - 1 ];
+        }
+
+        delete adjustments[ info.length - 1 ];
+
+        info.pop();
     }
 
     /**
@@ -523,6 +535,9 @@ contract Distributor is Policy {
         @param _target uint
      */
     function setAdjustment( uint _index, bool _add, uint _rate, uint _target ) external onlyPolicy() {
+        require( _rate != 0 && ( _add && info[ _index ].rate < _target || !_add && info[ _index ].rate > _target ), "Invalid adjustment" );
+        require( _target <= MAX_RATE, "Target rate too high" );
+
         adjustments[ _index ] = Adjust({
             add: _add,
             rate: _rate,

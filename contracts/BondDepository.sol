@@ -1,8 +1,6 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 pragma solidity 0.7.5;
 
-//import "hardhat/console.sol";
-
 /**
  * @dev Contract module that helps prevent reentrant calls to a function.
  *
@@ -688,7 +686,7 @@ library FixedPoint {
 interface ITreasury {
     function deposit( uint _amount, address _token, uint _profit ) external returns ( bool );
     function valueOf( address _token, uint _amount ) external view returns ( uint value_ );
-    function mintRewards( address _recipient, uint _amount, bool audit ) external;
+    function mintRewards( address _recipient, uint _amount ) external;
 }
 
 interface IBondCalculator {
@@ -709,7 +707,6 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
     using FixedPoint for *;
     using SafeERC20 for IERC20;
     using SafeMath for uint;
-    using SafeMath for uint32;
 
 
 
@@ -744,7 +741,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
     mapping( address => Bond ) public bondInfo; // stores bond information for depositors
 
     uint public totalDebt; // total value of outstanding bonds; used for pricing
-    uint32 public lastDecay; // reference time for debt decay
+    uint public lastDecay; // reference time for debt decay
 
 
     bool public useStableValuation = true;
@@ -758,15 +755,15 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
         uint maxPayout; // in thousandths of a %. i.e. 500 = 0.5%
         uint fee; // as % of bond payout, in hundreths. ( 500 = 5% = 0.05 for every 1 paid)
         uint maxDebt; // 9 decimal debt ratio, max % total supply created as debt
-        uint32 vestingTerm; // in seconds
+        uint vestingTerm; // in seconds
     }
 
     // Info for bond holder
     struct Bond {
         uint payout; // MINO remaining to be paid
         uint pricePaid; // In DAI, for front end viewing
-        uint32 lastTime; // Last interaction
-        uint32 vesting; // Seconds left to vest
+        uint lastTime; // Last interaction
+        uint vesting; // Seconds left to vest
     }
 
     // Info for incremental adjustments to control variable 
@@ -774,8 +771,8 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
         bool add; // addition or subtraction
         uint rate; // increment
         uint target; // BCV when adjustment finished
-        uint32 buffer; // minimum length (in seconds) between adjustments
-        uint32 lastTime; // time when last adjustment made
+        uint buffer; // minimum length (in seconds) between adjustments
+        uint lastTime; // time when last adjustment made
     }
 
 
@@ -806,7 +803,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
     /**
      *  @notice initializes bond parameters
      *  @param _controlVariable uint
-     *  @param _vestingTerm uint32
+     *  @param _vestingTerm uint
      *  @param _minimumPrice uint
      *  @param _maxPayout uint
      *  @param _fee uint
@@ -820,10 +817,10 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
         uint _fee,
         uint _maxDebt,
         uint _initialDebt,
-        uint32 _vestingTerm
+        uint _vestingTerm
     ) external onlyPolicy() {
         require( terms.controlVariable == 0, "Bonds must be initialized from 0" );
-        //console.log("_vestingTerm 2 %s", _vestingTerm);
+
         terms = Terms ({
             controlVariable: _controlVariable,
             minimumPrice: _minimumPrice,
@@ -833,7 +830,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
             vestingTerm: _vestingTerm
         });
         totalDebt = _initialDebt;
-        lastDecay = uint32(block.timestamp);
+        lastDecay = uint(block.timestamp);
     }
 
 
@@ -849,12 +846,10 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
      */
     function setBondTerms ( PARAMETER _parameter, uint _input ) external onlyPolicy() {
         if ( _parameter == PARAMETER.VESTING ) { // 0
-            //TODO: Uncomment
-            //require( _input >= 129600, "Vesting must be longer than 36 hours" );
-            terms.vestingTerm = uint32(_input);
-            //console.log("_input %s", _input);
+            require( _input >= 129600, "Vesting must be longer than 36 hours" );
+            terms.vestingTerm = uint(_input);
         } else if ( _parameter == PARAMETER.PAYOUT ) { // 1
-            require( _input <= 10000, "Payout cannot be above 1 percent" );
+            require( _input <= 10000, "Payout cannot be above 10 percent" );
             terms.maxPayout = _input;
         } else if ( _parameter == PARAMETER.FEE ) { // 2
             require( _input <= 10000, "DAO fee cannot exceed payout" );
@@ -881,8 +876,10 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
         bool _addition,
         uint _increment, 
         uint _target,
-        uint32 _buffer 
+        uint _buffer 
     ) external onlyPolicy() {
+        require( _increment != 0 && ( _addition && terms.controlVariable < _target || !_addition && terms.controlVariable > _target ),
+            "Invalid adjustment" );
         uint256 maxIncrement = terms.controlVariable.mul( 100 ).div( 1000 );
         require( _increment <= maxIncrement ||
                     maxIncrement == 0 && _increment == 1, "Increment too large" );
@@ -892,7 +889,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
             rate: _increment,
             target: _target,
             buffer: _buffer,
-            lastTime: uint32(block.timestamp)
+            lastTime: uint(block.timestamp)
         });
     }
 
@@ -929,6 +926,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
         uint _maxPrice,
         address _depositor
     ) external nonReentrant returns ( uint ) {
+        require( _depositor == msg.sender, "Sender not authorized" );
         require( _depositor != address(0), "Invalid address" );
 
         decayDebt();
@@ -970,15 +968,15 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
             }
         } else {
             IERC20( principle ).safeTransferFrom( msg.sender, treasury, _amount );
-            ITreasury( treasury ).mintRewards( address(this), payout, false );
-            ITreasury( treasury ).mintRewards( DAO, fee, true );
+            ITreasury( treasury ).mintRewards( address(this), payout );
+            ITreasury( treasury ).mintRewards( DAO, fee );
         }
                 
         // depositor info is stored
         bondInfo[ _depositor ] = Bond({ 
             payout: bondInfo[ _depositor ].payout.add( payout ),
             vesting: terms.vestingTerm,
-            lastTime: uint32(block.timestamp),
+            lastTime: uint(block.timestamp),
             pricePaid: priceInUSD
         });
 
@@ -996,7 +994,10 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
      *  @param _stake bool
      *  @return uint
      */ 
-    function redeem( address _recipient, bool _stake ) external returns ( uint ) {        
+    function redeem( address _recipient, bool _stake ) external returns ( uint ) {
+        require( _recipient == msg.sender, "Recipient not authorized" );
+        require( _recipient != address(0), "Invalid address" );
+
         Bond memory info = bondInfo[ _recipient ];
         // (seconds since last interaction / vesting term remaining)
         uint percentVested = percentVestedFor( _recipient );
@@ -1012,8 +1013,8 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
             // store updated deposit info
             bondInfo[ _recipient ] = Bond({
                 payout: info.payout.sub( payout ),
-                vesting: info.vesting.sub32( uint32( block.timestamp ).sub32( info.lastTime ) ),
-                lastTime: uint32(block.timestamp),
+                vesting: info.vesting.sub( uint( block.timestamp ).sub( info.lastTime ) ),
+                lastTime: uint(block.timestamp),
                 pricePaid: info.pricePaid
             });
 
@@ -1058,15 +1059,19 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
             if ( adjustment.add ) {
                 terms.controlVariable = terms.controlVariable.add( adjustment.rate );
                 if ( terms.controlVariable >= adjustment.target ) {
+                    terms.controlVariable = adjustment.target;
+                    adjustment.target = 0;
                     adjustment.rate = 0;
                 }
             } else {
-                terms.controlVariable = terms.controlVariable.sub( adjustment.rate );
+                terms.controlVariable = terms.controlVariable > adjustment.rate ? terms.controlVariable.sub( adjustment.rate ) : 0;
                 if ( terms.controlVariable <= adjustment.target ) {
+                    terms.controlVariable = adjustment.target;
+                    adjustment.target = 0;
                     adjustment.rate = 0;
                 }
             }
-            adjustment.lastTime = uint32(block.timestamp);
+            adjustment.lastTime = block.timestamp;
             emit ControlVariableAdjustment( initial, terms.controlVariable, adjustment.rate, adjustment.add );
         }
     }
@@ -1076,7 +1081,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
      */
     function decayDebt() internal {
         totalDebt = totalDebt.sub( debtDecay() );
-        lastDecay = uint32(block.timestamp);
+        lastDecay = uint(block.timestamp);
     }
 
 
@@ -1176,7 +1181,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
      *  @return decay_ uint
      */
     function debtDecay() public view returns ( uint decay_ ) {
-        uint32 timeSinceLast = uint32(block.timestamp).sub32( lastDecay );
+        uint timeSinceLast = uint(block.timestamp).sub( lastDecay );
         decay_ = totalDebt.mul( timeSinceLast ).div( terms.vestingTerm );
         if ( decay_ > totalDebt ) {
             decay_ = totalDebt;
@@ -1191,7 +1196,7 @@ contract MINOBondDepository is Ownable, ReentrancyGuard {
      */
     function percentVestedFor( address _depositor ) public view returns ( uint percentVested_ ) {
         Bond memory bond = bondInfo[ _depositor ];
-        uint secondsSinceLast = uint32(block.timestamp).sub( bond.lastTime );
+        uint secondsSinceLast = uint(block.timestamp).sub( bond.lastTime );
         uint vesting = bond.vesting;
 
         if ( vesting > 0 ) {
